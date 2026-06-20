@@ -1,0 +1,15 @@
+# Ignore the Virtual Environment
+myenv/
+
+# Ignore Python caches
+__pycache__/
+*.pyc
+
+# Ignore your private data and security logs
+contacts.json
+memory.json
+security_logs/
+arpit.jpg
+# Ignore heavy Machine Learning models
+*.pt
+weights/
