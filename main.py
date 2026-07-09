@@ -68,7 +68,15 @@ def save_memory(data):
 CONTACTS = load_contacts()
 MEMORY = load_memory()
 active_timers = []
-chat_history = []
+
+def load_chat_history():
+    if os.path.exists("chat_history.json"):
+        try:
+            with open("chat_history.json", "r") as f: return json.load(f)
+        except Exception: pass
+    return []
+
+chat_history = load_chat_history()
 tts_queue = queue.Queue()
 screenshot_counter = 0
 
@@ -204,7 +212,6 @@ class CodebreakerGUI(ctk.CTk):
         self.grid_rowconfigure(0, weight=1)
 
         self.is_voice_mode = False
-        self.is_authenticated = False # ZERO TRUST SYSTEM LOCK
         self.cap = None 
         self.latest_camera_frame = None
         
@@ -227,6 +234,7 @@ class CodebreakerGUI(ctk.CTk):
         
         self.update_ui_feed()
         self.update_system_metrics()
+        self.speak_async = speak_async
 
     def capture_boot_photo(self):
         try:
@@ -298,7 +306,7 @@ class CodebreakerGUI(ctk.CTk):
         self.chat_display = ctk.CTkTextbox(self.center_frame, font=ctk.CTkFont(family="Consolas", size=15), wrap="word", fg_color="#121214", border_color="#3b3b4a", border_width=1)
         self.chat_display.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
         self.chat_display.configure(state="disabled")
-        self.safe_append_chat("SYSTEM", "codebreaker97 Core Online.\n[SECURITY WARNING] System locked. Type 'authenticate' to unlock internal access.")
+        self.safe_append_chat("SYSTEM", "codebreaker97 Core Online. All systems unlocked and ready.")
 
         self.input_frame = ctk.CTkFrame(self.center_frame, height=60, corner_radius=10, fg_color="#1e1e24")
         self.input_frame.grid(row=1, column=0, sticky="ew")
@@ -355,6 +363,15 @@ class CodebreakerGUI(ctk.CTk):
         short_cmd = (command[:25] + '...') if len(command) > 25 else command
         btn = ctk.CTkButton(self.history_scroll, text=f"💬 {short_cmd}", fg_color="#2b2b36", hover_color="#3b3b4a", anchor="w")
         btn.pack(fill="x", pady=4)
+
+    def update_chat_memory(self, query, reply):
+        global chat_history
+        chat_history.extend([{'role': 'user', 'content': query}, {'role': 'assistant', 'content': reply}])
+        # Keep the last 15 interactions so the JSON doesn't become 10,000 lines long
+        if len(chat_history) > 15: chat_history = chat_history[-15:] 
+        try:
+            with open("chat_history.json", "w") as f: json.dump(chat_history, f)
+        except Exception: pass
 
     def on_upload_click(self):
         file_path = filedialog.askopenfilename(filetypes=[("Documents & Images", "*.pdf;*.png;*.jpg;*.jpeg")])
@@ -423,26 +440,6 @@ class CodebreakerGUI(ctk.CTk):
     def process_query(self, query):
         query_clean = query.lower()
         
-        # 17. BIOMETRIC SECURITY OVERRIDE
-        if "authenticate" in query_clean or "verify identity" in query_clean:
-            self.safe_append_chat("SYSTEM", "Initiating biometric scan. Please look at the camera...")
-            speak_async("Initiating biometric scan. Please hold still.")
-            threading.Thread(target=self.run_biometric_scan, daemon=True).start()
-            return
-            
-        # --- ZERO TRUST FIREWALL ---
-        restricted_commands = [
-            "list files", "open file", "open chrome", "open firefox", "open notepad", "open explorer", 
-            "take a note", "show notes", "read my notes", "remember", "what do you remember", 
-            "clear memory", "read the file", "read the image", "read clipboard", "get clipboard"
-        ]
-        
-        if not self.is_authenticated and any(cmd in query_clean for cmd in restricted_commands):
-            self.safe_append_chat("ERROR", "[ACCESS DENIED] System locked. Type 'authenticate' to verify identity before accessing internal files or memory.")
-            speak_async("Access denied. Please authenticate your identity.")
-            return
-        # ---------------------------
-
         # --- DYNAMIC PLUGIN ROUTER ---
         for plugin in self.plugins:
             try:
@@ -476,7 +473,32 @@ class CodebreakerGUI(ctk.CTk):
             self.safe_append_chat("SYSTEM", "Camera and YOLO Vision Offline.")
             speak_async("Camera and vision tracking disabled.")
             return
-
+# 6. WINDOWS PHONE LINK (CALLING)
+        if query_clean.startswith("call "):
+            target_name = query_clean.replace("call ", "").strip()
+            number = None
+            
+            # Search contacts file (case-insensitive)
+            for name, phone in CONTACTS.items():
+                if name.lower() == target_name:
+                    number = phone
+                    break
+            
+            if number:
+                self.safe_append_chat("SYSTEM", f"Initiating secure line to {target_name} ({number})...")
+                speak_async(f"Calling {target_name}.")
+                try:
+                    # The 'tel:' protocol triggers Windows Phone Link
+                    os.startfile(f"tel:{number}")
+                except AttributeError:
+                    # Fallback for Mac/Linux if OS module fails
+                    webbrowser.open(f"tel:{number}")
+                except Exception as e:
+                    self.safe_append_chat("ERROR", f"Dialer failed: {e}")
+            else:
+                self.safe_append_chat("ERROR", f"Target '{target_name}' not found in contacts.json.")
+                speak_async(f"I don't have a number for {target_name}.")
+            return
         # 2. REAL-TIME VISION QUERIES (True LLaVA Multimodal)
         vision_keywords = ["what am i", "what am i doing", "what am i holding", "describe me", "what do you see", "analyze", "look at me", "what colour", "what color"]
         if any(k in query_clean for k in vision_keywords):
@@ -513,7 +535,44 @@ class CodebreakerGUI(ctk.CTk):
             text = query_clean.replace("copy to clipboard", "").strip()
             self.safe_append_chat("SYSTEM", set_clipboard(text))
             return
+        # 7. LOCAL IMAGE GENERATION (STABLE DIFFUSION)
+        if query_clean.startswith("generate image "):
+            prompt_text = query_clean.replace("generate image ", "").strip()
+            self.safe_append_chat("SYSTEM", f"Engaging Diffusion Engine... Prompt: '{prompt_text}'")
+            speak_async("Generating image. Please wait.")
 
+            def generate_task():
+                payload = {
+                    "prompt": prompt_text,
+                    "steps": 20,
+                    "width": 512,
+                    "height": 512
+                }
+                try:
+
+                    # Pointing to your local Automatic1111 API instance
+                    response = requests.post(url='http://127.0.0.1:7860/sdapi/v1/txt2img', json=payload, timeout=60)
+                    r = response.json()
+                    
+                    import base64
+                    for i in r['images']:
+                        image_data = base64.b64decode(i.split(",", 1)[0])
+                        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        out_path = f"generated_{ts}.png"
+                        
+                        with open(out_path, 'wb') as f:
+                            f.write(image_data)
+                            
+                        self.safe_append_chat("SYSTEM", f"Image successfully compiled and saved to {out_path}")
+                        speak_async("Image generation complete.")
+                        
+                        # Open the image automatically in Windows
+                        os.startfile(out_path)
+                except Exception as e:
+                    self.safe_append_chat("ERROR", f"Diffusion Engine failed: {e}. Make sure your local WebUI API is running.")
+
+            threading.Thread(target=generate_task, daemon=True).start()
+            return
         # 5. HARDWARE MEDIA CONTROLS
         if "play music" in query_clean:
             # Pure hardware trigger to use Windows default media, bypassing protocol errors
@@ -596,64 +655,13 @@ class CodebreakerGUI(ctk.CTk):
             else:
                 speak_async("Coding task complete.")
 
-            # Append to memory (excluding the massive injected code chunks to save context window)
-            chat_history.extend([{'role': 'user', 'content': query}, {'role': 'assistant', 'content': reply}])
-            if len(chat_history) > 10: chat_history = chat_history[-10:]
+            # Append to persistent JSON memory
+            self.update_chat_memory(query, reply)
         except Exception as e:
             self.safe_append_chat("ERROR", f"LLM Error with {target_model}: {e}. Ensure it is installed via ollama pull.")
 
 
     # ---- BACKGROUND PROCESSES ----
-    def run_biometric_scan(self):
-        try:
-            self.safe_append_chat("SYSTEM", "[Loading Biometric Engine...]")
-            try:
-                import face_recognition
-            except Exception as e:
-                self.safe_append_chat("ERROR", f"Module crash (likely Numpy compatibility): {e}")
-                return
-
-            if not os.path.exists("arpit.jpg"):
-                self.safe_append_chat("ERROR", "No reference face found. Save a clear photo as 'arpit.jpg'.")
-                return
-
-            known_encoding = face_recognition.face_encodings(face_recognition.load_image_file("arpit.jpg"))[0]
-
-            self.safe_append_chat("SYSTEM", "[Accessing secure camera hardware...]")
-            if self.cap is not None and self.cap.isOpened() and self.latest_camera_frame is not None:
-                rgb_frame = self.latest_camera_frame
-            else:
-                temp_cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-                import time
-                time.sleep(0.5)
-                for _ in range(15): temp_cap.read()
-                ret, frame = temp_cap.read()
-                temp_cap.release()
-                
-                if not ret:
-                    self.safe_append_chat("ERROR", "Camera hardware is locked by another background process.")
-                    return
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-            self.safe_append_chat("SYSTEM", "[Scanning facial geometry...]")
-            live_encodings = face_recognition.face_encodings(rgb_frame)
-
-            if not live_encodings:
-                self.safe_append_chat("SYSTEM", "No face detected.")
-                speak_async("No face detected.")
-                return
-
-            if face_recognition.compare_faces([known_encoding], live_encodings[0], tolerance=0.55)[0]:
-                self.is_authenticated = True 
-                self.safe_append_chat("SYSTEM", "[ACCESS GRANTED] Identity verified. System unlocked.")
-                speak_async("Identity verified. Welcome back.")
-            else:
-                self.safe_append_chat("ERROR", "[ACCESS DENIED] Unrecognized face.")
-                speak_async("Unrecognized entity.")
-
-        except Exception as e:
-            self.safe_append_chat("ERROR", f"CRITICAL Biometric fault: {e}")
-
     def _run_timer(self, minutes):
         time.sleep(minutes * 60)
         self.safe_append_chat("SYSTEM", f"Timer complete! {minutes} minutes have passed.")
@@ -680,7 +688,7 @@ class CodebreakerGUI(ctk.CTk):
         if self.latest_camera_frame is not None:
             img = Image.fromarray(self.latest_camera_frame)
             self.video_label.configure(image=ctk.CTkImage(light_image=img, dark_image=img, size=(300, 225)), text="")
-        else: self.video_label.configure(image="", text="Camera Offline\n(Say 'Start Vision')")
+        else: self.video_label.configure(image=None, text="Camera Offline\n(Say 'Start Vision')")
         self.after(40, self.update_ui_feed)
 
     def update_system_metrics(self):
